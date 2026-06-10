@@ -10,19 +10,28 @@ function detectQuality() {
   if (typeof navigator === 'undefined') return 'high';
   const ua = navigator.userAgent || '';
   const isMobile = /Android|iPhone|iPad|iPod|Mobile|Silk/i.test(ua);
-  const cores = navigator.hardwareConcurrency || 4;
-  const mem = navigator.deviceMemory || 4;
-  const small = Math.min(window.innerWidth, window.innerHeight) < 500;
-  if ((isMobile && (small || cores <= 4 || mem <= 4))) return 'low';
+  if (isMobile) return 'low'; // always low on mobile — safer, still looks great
   return 'high';
 }
 
 function Loader() {
-  const { progress, active } = useProgress();
+  const { active } = useProgress();
+  const [hidden, setHidden] = useState(false);
+
+  // Since all geometry is procedural there are no external assets to load,
+  // so `progress` stays 0 and `active` stays false from the start.
+  // Hide after a short delay to let WebGL finish first-frame setup.
+  useEffect(() => {
+    if (!active) {
+      const t = setTimeout(() => setHidden(true), 1200);
+      return () => clearTimeout(t);
+    }
+  }, [active]);
+
   return (
-    <div className={`loader ${!active && progress >= 100 ? 'hidden' : ''}`}>
+    <div className={`loader ${hidden ? 'hidden' : ''}`}>
       <div className="ring" />
-      <div className="pct">{Math.round(progress)}%</div>
+      <div className="pct">Loading…</div>
     </div>
   );
 }

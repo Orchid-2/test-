@@ -2,23 +2,13 @@ import { useMemo, useRef } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
 
-/**
- * A procedural ocean built on summed Gerstner waves. The vertex shader
- * displaces a high-resolution plane and derives analytic normals; the
- * fragment shader does a Fresnel mix between deep-water colour and a
- * reflected-sky colour, plus a sharp sun specular for moving glints.
- * No external textures — keeps the bundle light and reliable on mobile.
- */
-
 const vertexShader = /* glsl */ `
   uniform float uTime;
-  uniform float uAmp;        // global amplitude scale (lowered on mobile)
+  uniform float uAmp;
   varying vec3 vWorld;
   varying vec3 vNormal;
+  varying float vFogDepth;
 
-  #include <fog_pars_vertex>
-
-  // Per-wave: direction.xy, amplitude, wavelength, speed, steepness
   const int N = 4;
   vec2  DIR[N];
   float AMP[N];
@@ -35,7 +25,7 @@ const vertexShader = /* glsl */ `
 
   void main() {
     setup();
-    vec3 p = position;          // local: xy is the horizontal plane, z is up
+    vec3 p = position;
     vec3 n = vec3(0.0, 0.0, 1.0);
 
     for (int i = 0; i < N; i++) {
@@ -59,10 +49,9 @@ const vertexShader = /* glsl */ `
     vWorld = worldPos.xyz;
     vNormal = normalize(mat3(modelMatrix) * normalize(n));
 
-    vec4 mvPosition = viewMatrix * worldPos;
-    gl_Position = projectionMatrix * mvPosition;
-
-    #include <fog_vertex>
+    vec4 mvPos = viewMatrix * worldPos;
+    vFogDepth = -mvPos.z;
+    gl_Position = projectionMatrix * mvPos;
   }
 `;
 
@@ -73,43 +62,36 @@ const fragmentShader = /* glsl */ `
   uniform vec3 uSkyHorizon;
   uniform vec3 uSunDir;
   uniform vec3 uSunColor;
+  uniform vec3 fogColor;
+  uniform float fogDensity;
   varying vec3 vWorld;
   varying vec3 vNormal;
-
-  #include <fog_pars_fragment>
+  varying float vFogDepth;
 
   void main() {
     vec3 N = normalize(vNormal);
     vec3 V = normalize(cameraPosition - vWorld);
 
-    // Reflected sky colour, graded from horizon to zenith.
     vec3 R = reflect(-V, N);
     float upness = clamp(R.y * 0.5 + 0.5, 0.0, 1.0);
     vec3 skyRefl = mix(uSkyHorizon, uSkyTop, pow(upness, 1.4));
 
-    // Fresnel (Schlick) — glancing angles reflect the sky, steep angles
-    // reveal the deep water beneath.
     float fres = 0.02 + 0.98 * pow(1.0 - max(dot(N, V), 0.0), 5.0);
-
-    // Depth tint based on a little of the wave normal for variety.
     vec3 water = mix(uDeep, uShallow, clamp(N.z * 0.6 + 0.2, 0.0, 1.0));
-
     vec3 color = mix(water, skyRefl, fres);
 
-    // Sharp sun specular glints.
     vec3 H = normalize(uSunDir + V);
     float spec = pow(max(dot(N, H), 0.0), 220.0);
     color += uSunColor * spec * 2.2;
 
-    // Broad sun sheen on the water surface toward the sun.
     float sheen = pow(max(dot(R, uSunDir), 0.0), 8.0);
     color += uSunColor * sheen * 0.18;
 
-    gl_FragColor = vec4(color, 1.0);
+    // Exponential fog (matches the <fogExp2> in the scene)
+    float fogFactor = 1.0 - exp(-fogDensity * fogDensity * vFogDepth * vFogDepth);
+    color = mix(color, fogColor, clamp(fogFactor, 0.0, 1.0));
 
-    #include <tonemapping_fragment>
-    #include <colorspace_fragment>
-    #include <fog_fragment>
+    gl_FragColor = vec4(color, 1.0);
   }
 `;
 
@@ -117,8 +99,7 @@ export default function Ocean({ sunDir, quality }) {
   const matRef = useRef();
   const { size } = useThree();
 
-  // Lower the tessellation and wave amplitude on small / low-power screens.
-  const segments = quality === 'low' ? 160 : 320;
+  const segments = quality === 'low' ? 140 : 280;
   const planeSize = 4000;
 
   const uniforms = useMemo(
@@ -131,6 +112,9 @@ export default function Ocean({ sunDir, quality }) {
       uSkyHorizon: { value: new THREE.Color('#dfe7ea') },
       uSunDir: { value: sunDir.clone().normalize() },
       uSunColor: { value: new THREE.Color('#fff1dd') },
+      // Fog uniforms — kept in sync with the scene's fogExp2
+      fogColor: { value: new THREE.Color('#cfd9dd') },
+      fogDensity: { value: quality === 'low' ? 0.0016 : 0.0013 },
     }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     []
@@ -148,7 +132,6 @@ export default function Ocean({ sunDir, quality }) {
       position-y={0}
       receiveShadow={false}
       frustumCulled={false}
-      // eslint-disable-next-line react-hooks/exhaustive-deps
       key={`${segments}-${size.width > size.height}`}
     >
       <planeGeometry args={[planeSize, planeSize, segments, segments]} />
@@ -157,7 +140,6 @@ export default function Ocean({ sunDir, quality }) {
         vertexShader={vertexShader}
         fragmentShader={fragmentShader}
         uniforms={uniforms}
-        fog
       />
     </mesh>
   );
